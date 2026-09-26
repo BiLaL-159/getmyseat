@@ -1,6 +1,7 @@
-import { useAuth } from 'react-oidc-context'
+import { useEffect } from 'react'
 import { Link } from 'react-router'
 import { useMe, type Role } from '@/api/me.ts'
+import { useSession } from '@/auth/session.ts'
 import { Button } from '@/components/ui/button.tsx'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.tsx'
 import ThemeToggle from '@/theme/ThemeToggle.tsx'
@@ -9,7 +10,15 @@ import './app.css'
 const roleLabels: Record<Role, string> = { CUSTOMER: 'Customer', ORGANIZER: 'Organizer', ADMIN: 'Admin' }
 
 function AppShell() {
-  const auth = useAuth()
+  const session = useSession()
+  const { signIn } = session
+  const mustSignIn = session.status === 'signedOut' && !session.error
+
+  // A signed-out visitor goes straight to sign-in, and comes back here afterwards. After a failed
+  // attempt they choose to retry, so a broken sign-in can't loop.
+  useEffect(() => {
+    if (mustSignIn) signIn('/app')
+  }, [mustSignIn, signIn])
 
   return (
     <div className="mx-auto flex min-h-svh max-w-2xl flex-col gap-8 px-4 py-12">
@@ -18,27 +27,24 @@ function AppShell() {
         <Link to="/" reloadDocument className="font-display text-3xl font-black uppercase leading-none">getMySeat</Link>
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          {auth.isAuthenticated && (
-            <Button variant="outline" onClick={() => void auth.signoutRedirect()}>Sign out</Button>
-          )}
+          {session.status === 'signedIn' && <Button variant="outline" onClick={session.signOut}>Sign out</Button>}
         </div>
       </header>
       <main>
-        {auth.isLoading || auth.activeNavigator ? (
-          <p className="font-mono text-muted-foreground">Signing you in…</p>
-        ) : auth.isAuthenticated ? (
+        {session.status === 'signedIn' ? (
           <Account />
-        ) : (
+        ) : session.error ? (
           <Card>
             <CardHeader>
               <CardTitle className="font-display text-2xl font-black uppercase">You&apos;re signed out</CardTitle>
-              <CardDescription>Sign in to see your account.</CardDescription>
+              <CardDescription role="alert">Sign-in didn&apos;t work. Please try again.</CardDescription>
             </CardHeader>
-            <CardContent className="flex flex-col items-start gap-4">
-              {auth.error && <p role="alert" className="text-destructive">Sign-in didn&apos;t work. Please try again.</p>}
-              <Button onClick={() => void auth.signinRedirect()}>Sign in</Button>
+            <CardContent>
+              <Button onClick={() => session.signIn('/app')}>Sign in</Button>
             </CardContent>
           </Card>
+        ) : (
+          <p className="font-mono text-muted-foreground">Signing you in…</p>
         )}
       </main>
     </div>

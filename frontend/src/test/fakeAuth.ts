@@ -21,7 +21,15 @@ export function signingIn(): AuthState {
 }
 
 export function signedIn(): AuthState {
-  return { ...signedOut(), isAuthenticated: true, user: { access_token: 'token', profile: { sub: 'user-1' } } as AuthState['user'] }
+  return {
+    ...signedOut(),
+    isAuthenticated: true,
+    user: {
+      access_token: 'token',
+      profile: { sub: 'user-1', name: 'Asha Rao', given_name: 'Asha' },
+      state: undefined,
+    } as AuthState['user'],
+  }
 }
 
 export function setAuth(next: AuthState) {
