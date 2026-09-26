@@ -72,7 +72,7 @@ To start over with an empty database, run `docker compose down -v`.
 
 ### Seed a catalogue
 
-With the stack running, fill it with sample data. You'll need `curl` and `jq`:
+Once `docker compose up -d --build --wait` has finished, fill the stack with sample data. You'll need `curl` and `jq`:
 
 ```bash
 scripts/seed.sh

@@ -5,8 +5,9 @@
 # Usage: docker compose up -d --build --wait && scripts/seed.sh
 #
 # It signs in as the dev `organizer` and `platform-admin` users and never touches the database directly. Running it
-# again is safe: Venues and Events are found by name, anything a previous run left half-done is finished, and Shows are
-# only added where an Event has fewer upcoming Shows at a Venue than listed below. Needs curl and jq.
+# again is safe: Venues and Events are found by name, anything a previous run left half-done is finished (a rejected
+# Venue is resubmitted and approved), and Shows are only added where an Event has fewer upcoming Shows at a Venue than
+# listed below. Needs curl and jq.
 set -euo pipefail
 
 API_URL=${API_URL:-http://localhost:8080}
@@ -133,152 +134,155 @@ JSON
 )
 
 die() {
-	echo "seed: $*" >&2
-	exit 1
+  echo "seed: $*" >&2
+  exit 1
 }
 
 log() {
-	echo "seed: $*"
+  echo "seed: $*"
 }
 
 # token USERNAME: an access token for a dev user.
 token() {
-	local response
-	response=$(curl -sS -d grant_type=password -d client_id=getmyseat-dev-cli -d username="$1" -d password=password \
-		"$KEYCLOAK_URL/realms/getmyseat/protocol/openid-connect/token") || die "can't reach Keycloak at $KEYCLOAK_URL"
-	jq -er .access_token <<<"$response" 2>/dev/null || die "couldn't sign in as $1: $response"
+  local response
+  response=$(curl -sS -d grant_type=password -d client_id=getmyseat-dev-cli -d username="$1" -d password=password \
+    "$KEYCLOAK_URL/realms/getmyseat/protocol/openid-connect/token") || die "can't reach Keycloak at $KEYCLOAK_URL"
+  jq -er .access_token <<<"$response" 2>/dev/null || die "couldn't sign in as $1: $response"
 }
 
 # api METHOD PATH TOKEN [JSON]: the response body. Exits on anything but a 2xx.
 api() {
-	local args=(-sS -X "$1" "$API_URL/api/v1$2" -H "Authorization: Bearer $3" -w '\n%{http_code}')
-	if [ -n "${4-}" ]; then args+=(-H 'Content-Type: application/json' -d "$4"); fi
-	local response status
-	response=$(curl "${args[@]}") || die "can't reach the API at $API_URL"
-	status=${response##*$'\n'}
-	response=${response%$'\n'*}
-	if [ "$status" -ge 300 ]; then die "$1 $2 returned $status: $response"; fi
-	printf '%s\n' "$response"
+  local args=(-sS -X "$1" "$API_URL/api/v1$2" -H "Authorization: Bearer $3" -w '\n%{http_code}')
+  if [ -n "${4-}" ]; then args+=(-H 'Content-Type: application/json' -d "$4"); fi
+  local response status
+  response=$(curl "${args[@]}") || die "can't reach the API at $API_URL"
+  status=${response##*$'\n'}
+  response=${response%$'\n'*}
+  if [ "$status" -ge 300 ]; then die "$1 $2 returned $status: $response"; fi
+  printf '%s\n' "$response"
 }
 
 # api_all PATH TOKEN: every item of a paginated list, as one JSON array.
 api_all() {
-	local separator='?' page=0 items='[]' response
-	case $1 in *\?*) separator='&' ;; esac
-	while :; do
-		# Bash 3.2 doesn't carry `set -e` into command substitutions, so stop explicitly.
-		response=$(api GET "$1${separator}size=100&page=$page" "$2") || exit 1
-		items=$(jq -c --argjson items "$items" '$items + .content' <<<"$response")
-		page=$((page + 1))
-		if [ "$page" -ge "$(jq .page.totalPages <<<"$response")" ]; then break; fi
-	done
-	printf '%s\n' "$items"
+  local separator='?' page=0 items='[]' response total_pages
+  case $1 in *\?*) separator='&' ;; esac
+  while :; do
+    # This runs inside $(...), where bash turns `set -e` off, so stop explicitly on failure.
+    response=$(api GET "$1${separator}size=100&page=$page" "$2") || exit 1
+    items=$(jq -c --argjson items "$items" '$items + .content' <<<"$response") || exit 1
+    total_pages=$(jq -e '.page.totalPages | numbers' <<<"$response") || die "GET $1 isn't a page: $response"
+    page=$((page + 1))
+    if [ "$page" -ge "$total_pages" ]; then break; fi
+  done
+  printf '%s\n' "$items"
 }
 
-# ensure_venue SPEC: approves the Venue, creating and submitting it first if needed, and adds it with its Section
-# Prices to VENUES.
+# id_and_status LIST FIELD VALUE: the id and status of the first item whose FIELD is VALUE, or nothing.
+id_and_status() {
+  jq -r --arg field "$2" --arg value "$3" 'map(select(.[$field] == $value))[0] // empty | "\(.id) \(.status)"' <<<"$1"
+}
+
+# ensure_venue SPEC: approves the Venue, creating and submitting it first if needed, and adds its id, name and a
+# price for every Section to PRICED_VENUES.
 ensure_venue() {
-	local spec=$1 name id status detail section
-	name=$(jq -r .name <<<"$spec")
-	id=$(jq -r --arg name "$name" 'map(select(.name == $name))[0].id // empty' <<<"$MY_VENUES")
-	if [ -z "$id" ]; then
-		id=$(api POST /venues "$ORGANIZER" "$(jq -c '{name, address, city, timeZone}' <<<"$spec")" | jq -r .id)
-		status=DRAFT
-		log "created Venue $name"
-	else
-		status=$(jq -r --arg id "$id" 'map(select(.id == $id))[0].status' <<<"$MY_VENUES")
-	fi
+  local spec=$1 name id status detail section
+  name=$(jq -r .name <<<"$spec")
+  read -r id status <<<"$(id_and_status "$MY_VENUES" name "$name")"
+  if [ -z "$id" ]; then
+    id=$(api POST /venues "$ORGANIZER" "$(jq -c '{name, address, city, timeZone}' <<<"$spec")" | jq -r .id)
+    status=DRAFT
+    log "created Venue $name"
+  fi
 
-	if [ "$status" = DRAFT ] || [ "$status" = REJECTED ]; then
-		detail=$(api GET "/venues/$id" "$ORGANIZER")
-		while IFS= read -r section; do
-			if ! jq -e --argjson section "$section" 'any(.sections[]; .name == $section.name)' <<<"$detail" >/dev/null; then
-				api POST "/venues/$id/sections" "$ORGANIZER" "$(jq -c 'del(.pricePaise)' <<<"$section")" >/dev/null
-			fi
-		done < <(jq -c '.sections[]' <<<"$spec")
-		api POST "/venues/$id/submit" "$ORGANIZER" >/dev/null
-		status=PENDING_REVIEW
-	fi
-	if [ "$status" = PENDING_REVIEW ]; then
-		api POST "/admin/venues/$id/approve" "$ADMIN" >/dev/null
-		log "approved Venue $name"
-	fi
+  if [ "$status" = DRAFT ] || [ "$status" = REJECTED ]; then
+    detail=$(api GET "/venues/$id" "$ORGANIZER")
+    while IFS= read -r section; do
+      if ! jq -e --argjson section "$section" 'any(.sections[]; (.name | ascii_downcase) == ($section.name | ascii_downcase))' <<<"$detail" >/dev/null; then
+        api POST "/venues/$id/sections" "$ORGANIZER" "$(jq -c 'del(.pricePaise)' <<<"$section")" >/dev/null
+      fi
+    done < <(jq -c '.sections[]' <<<"$spec")
+    api POST "/venues/$id/submit" "$ORGANIZER" >/dev/null
+    status=PENDING_REVIEW
+  fi
+  if [ "$status" = PENDING_REVIEW ]; then
+    api POST "/admin/venues/$id/approve" "$ADMIN" >/dev/null
+    log "approved Venue $name"
+  fi
 
-	detail=$(api GET "/venues/$id" "$ORGANIZER")
-	VENUES=$(jq -c --argjson spec "$spec" --argjson venues "$VENUES" '$venues + [{
-		id, name,
-		prices: [.sections[] as $section | {
-			sectionId: $section.id,
-			amountPaise: ($spec.sections[] | select(.name == $section.name) | .pricePaise),
-			currency: "INR"
-		}]
-	}]' <<<"$detail")
+  detail=$(api GET "/venues/$id" "$ORGANIZER")
+  PRICED_VENUES=$(jq -c --argjson spec "$spec" --argjson venues "$PRICED_VENUES" '$venues + [{
+    id, name,
+    prices: [.sections[] as $section | {
+      sectionId: $section.id,
+      amountPaise: (first($spec.sections[] | select(.name == $section.name) | .pricePaise)
+        // error("Venue \(.name) has a Section \($section.name) that the seed has no price for")),
+      currency: "INR"
+    }]
+  }]' <<<"$detail")
 }
 
 # ensure_event SPEC: publishes the Event, creating it first if needed, and tops up its upcoming Shows.
 ensure_event() {
-	local spec=$1 title id status shows show_spec venue upcoming count day starts_at show show_id
-	title=$(jq -r .title <<<"$spec")
-	id=$(jq -r --arg title "$title" 'map(select(.title == $title))[0].id // empty' <<<"$MY_EVENTS")
-	if [ -z "$id" ]; then
-		id=$(api POST /events "$ORGANIZER" "$(jq -c '{title, description, category, language}' <<<"$spec")" \
-			| jq -r .id)
-		status=DRAFT
-		log "created Event $title"
-	else
-		status=$(jq -r --arg id "$id" 'map(select(.id == $id))[0].status' <<<"$MY_EVENTS")
-	fi
-	if [ "$status" = DRAFT ]; then
-		api POST "/events/$id/publish" "$ORGANIZER" >/dev/null
-		log "published Event $title"
-	fi
+  local spec=$1 title id status shows show_spec venue upcoming index day starts_at show show_id
+  title=$(jq -r .title <<<"$spec")
+  read -r id status <<<"$(id_and_status "$MY_EVENTS" title "$title")"
+  if [ -z "$id" ]; then
+    id=$(api POST /events "$ORGANIZER" "$(jq -c '{title, description, category, language}' <<<"$spec")" \
+      | jq -r .id)
+    status=DRAFT
+    log "created Event $title"
+  fi
+  if [ "$status" = DRAFT ]; then
+    api POST "/events/$id/publish" "$ORGANIZER" >/dev/null
+    log "published Event $title"
+  fi
 
-	# As the owner this lists every Show of the Event, drafts and past ones included.
-	shows=$(api_all "/events/$id/shows" "$ORGANIZER")
-	while IFS= read -r show_spec; do
-		venue=$(jq -c --argjson show "$show_spec" '.[] | select(.name == $show.venue)' <<<"$VENUES")
-		[ -n "$venue" ] || die "Event $title has a Show at unknown Venue $(jq -r .venue <<<"$show_spec")"
-		upcoming=$(jq -c --argjson venue "$venue" '
-			map(select(.venue.id == $venue.id and (.startsAt | sub("\\.[0-9]+"; "") | fromdate) > now))
-			| sort_by(.startsAt)' <<<"$shows")
-		count=0
-		for day in $(jq -r '.inDays[]' <<<"$show_spec"); do
-			show=$(jq -c --argjson i "$count" '.[$i] // empty' <<<"$upcoming")
-			count=$((count + 1))
-			if [ -z "$show" ]; then
-				starts_at=$(jq -rn --argjson day "$day" --arg at "$(jq -r .at <<<"$show_spec")" \
-					--argjson offset "$IST_OFFSET_SECONDS" \
-					'(now + $day * 86400 | strftime("%Y-%m-%d")) + "T" + $at + ":00Z" | fromdate - $offset | todate')
-				show=$(api POST "/events/$id/shows" "$ORGANIZER" \
-					"$(jq -nc --arg venueId "$(jq -r .id <<<"$venue")" --arg startsAt "$starts_at" '{venueId: $venueId, startsAt: $startsAt}')")
-			fi
-			if [ "$(jq -r .status <<<"$show")" = DRAFT ]; then
-				show_id=$(jq -r .id <<<"$show")
-				api PUT "/shows/$show_id/prices" "$ORGANIZER" "$(jq -c '{prices}' <<<"$venue")" >/dev/null
-				api POST "/shows/$show_id/publish" "$ORGANIZER" >/dev/null
-				log "published Show of $title at $(jq -r .name <<<"$venue"), $(jq -r .startsAt <<<"$show")"
-			fi
-		done
-	done < <(jq -c '.shows[]' <<<"$spec")
+  # As the owner this lists every Show of the Event, drafts and past ones included.
+  shows=$(api_all "/events/$id/shows" "$ORGANIZER")
+  while IFS= read -r show_spec; do
+    venue=$(jq -c --argjson show "$show_spec" '.[] | select(.name == $show.venue)' <<<"$PRICED_VENUES")
+    [ -n "$venue" ] || die "Event $title has a Show at unknown Venue $(jq -r .venue <<<"$show_spec")"
+    upcoming=$(jq -c --argjson venue "$venue" '
+      map(select(.venue.id == $venue.id and (.startsAt | sub("\\.[0-9]+"; "") | fromdate) > now))
+      | sort_by(.startsAt)' <<<"$shows")
+    index=0
+    for day in $(jq -r '.inDays[]' <<<"$show_spec"); do
+      show=$(jq -c --argjson i "$index" '.[$i] // empty' <<<"$upcoming")
+      index=$((index + 1))
+      if [ -z "$show" ]; then
+        starts_at=$(jq -rn --argjson day "$day" --arg at "$(jq -r .at <<<"$show_spec")" \
+          --argjson offset "$IST_OFFSET_SECONDS" \
+          '(now + $offset + $day * 86400 | strftime("%Y-%m-%d")) + "T" + $at + ":00Z" | fromdate - $offset | todate')
+        show=$(api POST "/events/$id/shows" "$ORGANIZER" \
+          "$(jq -nc --arg venueId "$(jq -r .id <<<"$venue")" --arg startsAt "$starts_at" '{venueId: $venueId, startsAt: $startsAt}')")
+      fi
+      if [ "$(jq -r .status <<<"$show")" = DRAFT ]; then
+        show_id=$(jq -r .id <<<"$show")
+        api PUT "/shows/$show_id/prices" "$ORGANIZER" "$(jq -c '{prices}' <<<"$venue")" >/dev/null
+        api POST "/shows/$show_id/publish" "$ORGANIZER" >/dev/null
+        log "published Show of $title at $(jq -r .name <<<"$venue"), $(jq -r .startsAt <<<"$show")"
+      fi
+    done
+  done < <(jq -c '.shows[]' <<<"$spec")
 }
 
 command -v curl >/dev/null || die "needs curl"
 command -v jq >/dev/null || die "needs jq"
 curl -sf "$API_URL/actuator/health/readiness" >/dev/null \
-	|| die "the API at $API_URL isn't ready; start the stack with: docker compose up -d --build --wait"
+  || die "the API at $API_URL isn't ready; start the stack with: docker compose up -d --build --wait"
 
 ORGANIZER=$(token organizer)
 ADMIN=$(token platform-admin)
 
 MY_VENUES=$(api_all /venues/mine "$ORGANIZER")
-VENUES='[]'
+PRICED_VENUES='[]'
 while IFS= read -r spec; do
-	ensure_venue "$spec"
+  ensure_venue "$spec"
 done < <(jq -c '.venues[]' <<<"$SEED")
 
 MY_EVENTS=$(api_all /events/mine "$ORGANIZER")
 while IFS= read -r spec; do
-	ensure_event "$spec"
+  ensure_event "$spec"
 done < <(jq -c '.events[]' <<<"$SEED")
 
 log "done: $(jq '.venues | length' <<<"$SEED") Venues and $(jq '.events | length' <<<"$SEED") Events are live at $API_URL"
