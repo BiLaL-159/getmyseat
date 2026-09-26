@@ -1,8 +1,11 @@
 import { useEffect } from 'react'
+import { Link } from 'react-router'
+import { useSession } from '@/auth/session.ts'
 import { mountLanding } from './mountLanding.ts'
 import './landing.css'
 
 function Landing() {
+  const session = useSession()
   useEffect(() => mountLanding(), [])
 
   return (
@@ -20,7 +23,17 @@ function Landing() {
                 <a href="#view">Your view</a>
                 <a href="#guide">What&apos;s on</a>
                 <a href="#host">For venues</a>
-                <a className="signin" href="#guide">Sign in</a>
+                {session.status === 'signedIn' ? (
+                  <>
+                    <a href="/" onClick={(e) => { e.preventDefault(); session.signOut() }}>Sign out</a>
+                    <Link className="signin" to="/app">{session.firstName ?? 'Your account'}</Link>
+                  </>
+                ) : session.status === 'signedOut' ? (
+                  <a className="signin" href="/app" onClick={(e) => { e.preventDefault(); session.signIn('/app') }}>Sign in</a>
+                ) : (
+                  // Holds the link's place while the session is restored, so nothing jumps or flashes.
+                  <span className="signin" aria-hidden="true" style={{ visibility: 'hidden' }}>Sign in</span>
+                )}
               </div>
             </nav>
             <span className="live label"><i></i>Live now · Harbourline Arena, Mumbai</span>
