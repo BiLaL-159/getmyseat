@@ -14,7 +14,8 @@ function AppShell() {
   return (
     <div className="mx-auto flex min-h-svh max-w-2xl flex-col gap-8 px-4 py-12">
       <header className="flex flex-wrap items-center justify-between gap-4">
-        <Link to="/" className="font-display text-3xl font-black uppercase leading-none">getMySeat</Link>
+        {/* A full load, so Tailwind's preflight doesn't follow the visitor onto the landing page. */}
+        <Link to="/" reloadDocument className="font-display text-3xl font-black uppercase leading-none">getMySeat</Link>
         <div className="flex items-center gap-2">
           <ThemeToggle />
           {auth.isAuthenticated && (
