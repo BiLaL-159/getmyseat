@@ -9,7 +9,11 @@ export const routes: RouteObject[] = [
     lazy: async () => ({ Component: (await import('./landing/Landing.tsx')).default }),
   },
   {
+    path: '/auth/callback',
+    lazy: async () => ({ Component: (await import('./app/SignInCallback.tsx')).default }),
+  },
+  {
     path: '/app',
-    lazy: async () => ({ Component: (await import('./app/Preview.tsx')).default }),
+    lazy: async () => ({ Component: (await import('./app/AppShell.tsx')).default }),
   },
 ]

@@ -1,40 +1,34 @@
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { createMemoryRouter, RouterProvider } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
-import { routes } from './routes.tsx'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { resetAuth, setAuth, signedIn, signinRedirect } from '@/test/fakeAuth.ts'
+import { renderRoute } from '@/test/renderRoute.tsx'
 
+vi.mock('react-oidc-context', () => import('@/test/fakeAuth.ts'))
 // The landing's imperative layer needs WebGL and layout, which jsdom lacks.
 vi.mock('./landing/mountLanding.ts', () => ({ mountLanding: () => () => {} }))
 
-function renderAt(path: string) {
-  const router = createMemoryRouter(routes, { initialEntries: [path] })
-  render(<RouterProvider router={router} />)
-}
+beforeEach(resetAuth)
 
-describe('routes', () => {
+describe('landing', () => {
   it('renders the landing page at /', async () => {
-    renderAt('/')
+    renderRoute('/')
     expect(await screen.findByRole('heading', { level: 1 })).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: /component preview/i })).not.toBeInTheDocument()
   })
 
-  it('renders the shadcn primitives on the app route', async () => {
-    renderAt('/app')
-    expect(await screen.findByRole('heading', { name: /component preview/i })).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: /email/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /hold seats/i })).toBeInTheDocument()
-    expect(screen.getByText(/tonight/i, { selector: '[data-slot="card-title"]' })).toBeInTheDocument()
-  })
-
-  it('switches the whole document between light and dark themes', async () => {
+  it('starts the real sign-in from "Sign in"', async () => {
     const user = userEvent.setup()
-    renderAt('/app')
+    renderRoute('/')
 
-    await user.click(await screen.findByRole('button', { name: /dark theme/i }))
-    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    await user.click(await screen.findByRole('link', { name: /sign in/i }))
+    expect(signinRedirect).toHaveBeenCalled()
+  })
 
-    await user.click(screen.getByRole('button', { name: /light theme/i }))
-    expect(document.documentElement).toHaveAttribute('data-theme', 'light')
+  it('links a signed-in visitor to the app instead', async () => {
+    setAuth(signedIn())
+    renderRoute('/')
+
+    expect(await screen.findByRole('link', { name: /your account/i })).toHaveAttribute('href', '/app')
+    expect(screen.queryByRole('link', { name: /sign in/i })).not.toBeInTheDocument()
   })
 })

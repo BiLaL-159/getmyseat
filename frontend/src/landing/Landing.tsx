@@ -1,8 +1,11 @@
 import { useEffect } from 'react'
+import { useAuth } from 'react-oidc-context'
+import { Link } from 'react-router'
 import { mountLanding } from './mountLanding.ts'
 import './landing.css'
 
 function Landing() {
+  const auth = useAuth()
   useEffect(() => mountLanding(), [])
 
   return (
@@ -20,7 +23,11 @@ function Landing() {
                 <a href="#view">Your view</a>
                 <a href="#guide">What&apos;s on</a>
                 <a href="#host">For venues</a>
-                <a className="signin" href="#guide">Sign in</a>
+                {auth.isAuthenticated ? (
+                  <Link className="signin" to="/app">Your account</Link>
+                ) : (
+                  <a className="signin" href="/app" onClick={(e) => { e.preventDefault(); void auth.signinRedirect() }}>Sign in</a>
+                )}
               </div>
             </nav>
             <span className="live label"><i></i>Live now · Harbourline Arena, Mumbai</span>
