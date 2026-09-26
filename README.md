@@ -70,6 +70,16 @@ This starts:
 
 To start over with an empty database, run `docker compose down -v`.
 
+### Seed a catalogue
+
+With the stack running, fill it with sample data. You'll need `curl` and `jq`:
+
+```bash
+scripts/seed.sh
+```
+
+It uses the public API as the seed `organizer` and `platform-admin` to create six approved Venues with Seated and General Admission Sections, and six published Events with priced Shows over the next six weeks in Mumbai, Bengaluru, New Delhi, Pune and Hyderabad. Running it again is safe. It finds Venues and Events by name, finishes anything a previous run left half-done, and only adds Shows to replace ones that have since started. Set `API_URL` or `KEYCLOAK_URL` to point it somewhere other than `localhost:8080` and `localhost:8180`.
+
 ## Usage
 
 Fetch a token for one of the seed users and call the API:
@@ -314,6 +324,7 @@ CI runs `./mvnw verify` for the backend and `npm run lint` and `npm run build` f
 ├── frontend/             React + Vite app
 ├── infra/keycloak/       Keycloak realm export
 ├── load-test/            k6 load test for Holds
+├── scripts/              seed.sh, which fills the local stack with sample data
 ├── docs/                 API reference, walkthrough, configuration, load test report
 └── docker-compose.yml    local stack
 ```
